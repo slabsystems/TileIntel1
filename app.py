@@ -3,71 +3,97 @@ from fpdf import FPDF
 def _to_ascii(s: str) -> str:
     if s is None:
         return ""
-    # Normalize a few common unicode chars
     return (
         s.replace("–", "-").replace("—", "-").replace("•", "-")
          .replace("’", "'").replace("“", '"').replace("”", '"')
          .encode("latin-1", "replace").decode("latin-1")
     )
 
+def _soft_wrap_tokens(text: str, target_w: float, pdf: FPDF) -> str:
+    """Split tokens that are wider than target_w so fpdf can render them."""
+    words = text.split()
+    out = []
+    for w in words:
+        if not w:
+            continue
+        while pdf.get_string_width(w) > target_w and len(w) > 1:
+            # cut proportionally
+            cut = max(1, int(len(w) * target_w / (pdf.get_string_width(w) + 0.001)))
+            out.append(w[:cut])
+            w = w[cut:]
+        out.append(w)
+    return " ".join(out)
+
 def generate_pdf(job: dict) -> bytes:
     pdf = FPDF(orientation="P", unit="mm", format="A4")
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.set_left_margin(15)
     pdf.set_right_margin(15)
+    pdf.set_top_margin(15)
     pdf.add_page()
 
-    # Title
+    # Fonts & padding
     pdf.set_font("Helvetica", "B", 16)
+    pdf.set_draw_color(0, 0, 0)
+    pdf.set_text_color(0, 0, 0)
+    pdf.set_fill_color(255, 255, 255)
+    pdf.set_font_size(16)
     pdf.cell(0, 10, "TileIntel — Method Statement (MVP)", ln=1)
     pdf.ln(2)
 
-    # Body font
-    pdf.set_font("Helvetica", "", 11)
+    pdf.set_font("Helvetica", "", 10)
+    pdf.set_font_size(10)
+    pdf.set_cell_padding(0.6)  # helps with very narrow widths
 
-    # Calculate safe column widths
-    page_w = pdf.w         # total page width
-    l_mar = pdf.l_margin   # left margin
-    r_mar = pdf.r_margin   # right margin
-    usable_w = page_w - l_mar - r_mar
-    label_w = 40           # left column width (label)
-    gap = 4                # spacing between columns
-    value_w = max(10, usable_w - label_w - gap)  # ensure positive width
+    # Effective page width
+    usable_w = pdf.epw  # fpdf2: page width - left/right margins
+    l_mar = pdf.l_margin
+    r_mar = pdf.r_margin
+
+    # Column layout
+    gap = 4
+    label_w = min(48, max(32, usable_w * 0.38))
+    value_w = usable_w - label_w - gap
+
+    # MIN width for multi_cell: at least padding + a glyph width
+    min_value_w = pdf.c_margin * 2 + pdf.get_string_width("W") + 0.5
+    if value_w < min_value_w:
+        # if the layout is somehow too tight, widen label/value split
+        label_w = max(28, usable_w * 0.30)
+        value_w = usable_w - label_w - gap
 
     def row(label: str, value: str):
-        # Always reset X to left margin before drawing
-        pdf.set_x(l_mar)
-        # Draw label (single line)
-        pdf.set_font("Helvetica", "B", 11)
-        pdf.cell(label_w, 6, _to_ascii(label), ln=0)
-        # Draw value (multi-line, wraps within available width)
-        pdf.set_font("Helvetica", "", 11)
-        # Make sure X is exactly after the label + gap
-        pdf.set_x(l_mar + label_w + gap)
-        txt = _to_ascii(value if value is not None else "")
-        # If a word is ridiculously long, insert soft breaks to avoid the single-char error
-        txt = _hard_wrap(txt, value_w, pdf)
-        pdf.multi_cell(value_w, 6, txt)
+        """Render a key/value row; fallback to full-width if too narrow."""
+        label_txt = _to_ascii(label or "")
+        raw_val = _to_ascii(value or "")
+        x_left = l_mar
+
+        # Always start from left margin
+        pdf.set_x(x_left)
+
+        # If the value column is still too small, switch to stacked layout
+        if value_w < min_value_w:
+            pdf.set_font("Helvetica", "B", 10)
+            pdf.cell(0, 6, label_txt, ln=1)
+            pdf.set_font("Helvetica", "", 10)
+            pdf.set_x(x_left)
+            wrapped = _soft_wrap_tokens(raw_val, usable_w - pdf.c_margin * 2, pdf)
+            pdf.multi_cell(usable_w, 6, wrapped)
+            pdf.ln(1)
+            return
+
+        # Two-column layout
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.cell(label_w, 6, label_txt, ln=0)
+
+        pdf.set_font("Helvetica", "", 10)
+        # align X for value
+        pdf.set_x(x_left + label_w + gap)
+        wrapped = _soft_wrap_tokens(raw_val, value_w - pdf.c_margin * 2, pdf)
+        pdf.multi_cell(value_w, 6, wrapped)
         pdf.ln(1)
 
-    def _hard_wrap(text: str, target_w: float, _pdf: FPDF) -> str:
-        """
-        Very long unbroken strings (like 200-char filenames) can still break FPDF.
-        This inserts soft breaks on long tokens so every token can fit.
-        """
-        words = text.split()
-        out = []
-        for w in words:
-            # if a single word is wider than the column, split it
-            while _pdf.get_string_width(w) > target_w and len(w) > 1:
-                # binary chop approx
-                cut = max(1, int(len(w) * target_w / (_pdf.get_string_width(w) + 0.001)))
-                out.append(w[:cut])
-                w = w[cut:]
-            out.append(w)
-        return " ".join(out)
-
-    # ---- Rows (example – adapt fields to yours) ----
+    # ---- Content ----
     row("Project", job.get("project_desc", ""))
     row("Room", job.get("room", ""))
     row("Area (m²)", str(job.get("area_m2", "")))
@@ -79,23 +105,22 @@ def generate_pdf(job: dict) -> bytes:
     row("Grout", job.get("grout", ""))
 
     pdf.ln(2)
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 8, "Calculated Materials", ln=1)
-    pdf.set_font("Helvetica", "", 11)
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.cell(0, 7, "Calculated Materials", ln=1)
+    pdf.set_font("Helvetica", "", 10)
     row("Tiles needed (pcs)", str(job.get("calc_tiles_pcs", "")))
     row("Adhesive (kg)", str(job.get("calc_adhesive_kg", "")))
     row("Grout (kg)", str(job.get("calc_grout_kg", "")))
     row("Primer (L)", str(job.get("calc_primer_l", "")))
     row("Levelling compound (bags)", str(job.get("calc_screed_bags", "")))
 
-    # Notes
     notes = job.get("notes", "")
     if notes:
         pdf.ln(2)
-        pdf.set_font("Helvetica", "B", 12)
-        pdf.cell(0, 8, "Notes", ln=1)
-        pdf.set_font("Helvetica", "", 11)
-        pdf.set_x(l_mar)
-        pdf.multi_cell(usable_w, 6, _to_ascii(notes))
+        pdf.set_font("Helvetica", "B", 11)
+        pdf.cell(0, 7, "Notes", ln=1)
+        pdf.set_font("Helvetica", "", 10)
+        wrapped_notes = _soft_wrap_tokens(_to_ascii(notes), usable_w - pdf.c_margin * 2, pdf)
+        pdf.multi_cell(usable_w, 6, wrapped_notes)
 
     return pdf.output(dest="S").encode("latin-1", "replace")
