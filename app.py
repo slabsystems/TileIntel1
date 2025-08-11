@@ -1,10 +1,3 @@
-# app.py
-import io
-import datetime
-from pathlib import Path
-import tempfile
-
-import streamlit as st
 from fpdf import FPDF
 
 def _to_ascii(s: str) -> str:
