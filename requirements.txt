@@ -1,3 +1,4 @@
+# --- Streamlit App Dependencies ---
 altair==5.5.0
 attrs==25.3.0
 blinker==1.9.0
@@ -42,3 +43,9 @@ markdown-it-py==4.0.0
 mdurl==0.1.2
 pygments==2.19.2
 rich==14.1.0
+
+# --- Flask + Vercel Deployment Dependencies ---
+flask==3.0.3
+gunicorn==23.0.0
+werkzeug==3.0.3
+
