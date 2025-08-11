@@ -1,3 +1,7 @@
 streamlit
 fpdf2
 pillow
+streamlit
+pandas
+numpy
+fpdf2
